@@ -44,20 +44,47 @@ type HealthReport struct {
 	Error     int // file could not be read (e.g. permission denied)
 }
 
-// GetEmbeddedFormulaContent returns the raw content of an embedded formula by name.
+// GetEmbeddedFormulaContent returns the raw content of a formula by name.
 // The name can be with or without the .formula.toml suffix.
-// Returns the content bytes, or an error if the formula is not found.
+// Lookup order:
+//  1. Embedded formulas (compiled into the binary)
+//  2. Disk: .beads/formulas/ (CWD-relative)
+//  3. Disk: ~/.beads/formulas/
+//  4. Disk: $GT_ROOT/.beads/formulas/
+//
+// Returns the content bytes, or an error if the formula is not found anywhere.
 func GetEmbeddedFormulaContent(name string) ([]byte, error) {
 	// Normalize: ensure the filename has the correct suffix
 	filename := name
 	if !hasFormulaSuffix(filename) {
 		filename = filename + ".formula.toml"
 	}
+
+	// 1. Try embedded formulas first
 	content, err := formulasFS.ReadFile("formulas/" + filename)
-	if err != nil {
-		return nil, fmt.Errorf("embedded formula %q not found: %w", name, err)
+	if err == nil {
+		return content, nil
 	}
-	return content, nil
+
+	// 2. Fall back to disk search paths
+	searchPaths := []string{
+		filepath.Join(".beads", "formulas"),
+	}
+	if home, homeErr := os.UserHomeDir(); homeErr == nil {
+		searchPaths = append(searchPaths, filepath.Join(home, ".beads", "formulas"))
+	}
+	if gtRoot := os.Getenv("GT_ROOT"); gtRoot != "" {
+		searchPaths = append(searchPaths, filepath.Join(gtRoot, ".beads", "formulas"))
+	}
+
+	for _, dir := range searchPaths {
+		path := filepath.Join(dir, filename)
+		if diskContent, diskErr := os.ReadFile(path); diskErr == nil {
+			return diskContent, nil
+		}
+	}
+
+	return nil, fmt.Errorf("formula %q not found (checked embedded and disk paths)", name)
 }
 
 // hasFormulaSuffix checks if a name already has a formula file suffix.
