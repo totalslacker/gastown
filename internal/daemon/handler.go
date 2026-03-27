@@ -299,6 +299,15 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 			// Session is already started — dog will find no mail and idle out.
 		}
 
+		// Record the dispatch so cooldown gate works on subsequent patrols.
+		if _, err := recorder.RecordRun(plugin.PluginRunRecord{
+			PluginName: p.Name,
+			Result:     plugin.ResultSuccess,
+			Body:       fmt.Sprintf("Dispatched to dog %s", idleDog.Name),
+		}); err != nil {
+			d.logger.Printf("Handler: failed to record plugin run for %s: %v", p.Name, err)
+		}
+
 		d.logger.Printf("Handler: dispatched plugin %s to dog %s", p.Name, idleDog.Name)
 	}
 }
