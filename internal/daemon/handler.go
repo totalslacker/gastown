@@ -231,12 +231,15 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 		return
 	}
 
+	d.logger.Printf("Handler: discovered %d plugins with cooldown gates", countCooldownPlugins(plugins))
+
 	if len(plugins) == 0 {
 		return
 	}
 
 	recorder := plugin.NewRecorder(d.config.TownRoot)
 	router := mail.NewRouterWithTownRoot(d.config.TownRoot, d.config.TownRoot)
+	failedDogs := make(map[string]bool) // Track dogs that failed session start
 
 	for _, p := range plugins {
 		// Only dispatch plugins with cooldown gates.
@@ -256,11 +259,11 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 			}
 		}
 
-		// Find an idle dog.
-		idleDog, err := mgr.GetIdleDog()
+		// Find an idle dog (skip dogs with stale sessions).
+		idleDog, err := getIdleDogExcluding(mgr, failedDogs)
 		if err != nil {
 			d.logger.Printf("Handler: error finding idle dog: %v", err)
-			return // No point continuing if we can't list dogs
+			return
 		}
 		if idleDog == nil {
 			d.logger.Printf("Handler: no idle dogs available, deferring remaining plugins")
@@ -278,6 +281,7 @@ func (d *Daemon) dispatchPlugins(mgr *dog.Manager, sm *dog.SessionManager, rigsC
 			WorkDesc: workDesc,
 		}); err != nil {
 			d.logger.Printf("Handler: failed to start session for dog %s: %v", idleDog.Name, err)
+			failedDogs[idleDog.Name] = true
 			// Roll back assignment on session start failure.
 			if clearErr := mgr.ClearWork(idleDog.Name); clearErr != nil {
 				d.logger.Printf("Handler: failed to clear work after start failure for dog %s: %v", idleDog.Name, clearErr)
@@ -322,4 +326,29 @@ func (d *Daemon) loadRigsConfig() (*config.RigsConfig, error) {
 // Returns a valid (never nil) config — accessors return defaults for nil fields.
 func (d *Daemon) loadOperationalConfig() *config.OperationalConfig {
 	return config.LoadOperationalConfig(d.config.TownRoot)
+}
+
+// getIdleDogExcluding returns the first idle dog not in the exclude set.
+func getIdleDogExcluding(mgr *dog.Manager, exclude map[string]bool) (*dog.Dog, error) {
+	dogs, err := mgr.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range dogs {
+		if d.State == dog.StateIdle && !exclude[d.Name] {
+			return d, nil
+		}
+	}
+	return nil, nil
+}
+
+// countCooldownPlugins counts plugins with cooldown gates for logging.
+func countCooldownPlugins(plugins []*plugin.Plugin) int {
+	n := 0
+	for _, p := range plugins {
+		if p.Gate != nil && p.Gate.Type == plugin.GateCooldown {
+			n++
+		}
+	}
+	return n
 }
